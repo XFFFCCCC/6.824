@@ -1,6 +1,7 @@
 package mr
 
 import (
+	"encoding/json"
 	"fmt"
 	"hash/fnv"
 	"log"
@@ -28,7 +29,6 @@ func ihash(key string) int {
 // main/mrworker.go calls this function.
 // map  返回的是Kay value
 // reduce 返回的是string
-
 // 1.map 2 reduce
 func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
@@ -102,20 +102,41 @@ func doHeartBeat() Response {
 func doMapTask(mapf func(string, string) []KeyValue, response Response) {
 	reduceNum := response.reduceNum // 任务数量
 	filePath := response.fileName   //文件名字
-	mapNum := response.mapNum
-
+	mapNum := response.jobNum
 	//读取文件
 	content, err := os.ReadFile(filePath)
 	if err != nil {
 		//panic 或者log
+		log.Fatalf("ReadFile failed %v:%v", filePath, err)
 	}
 
 	kva := mapf(filePath, string(content))
 
-	doSave(response, kva)
+	tmpFiles := make([]*os.File, reduceNum)
+	tempFileNames := make([]string, reduceNum)
+	encoders := make([]*json.Encoder, reduceNum)
 
-	//从文件中读取数据 ，然后要把 数据写到对应的文件中去
+	for i := 0; i < reduceNum; i++ {
+		tempFileNames[i] = fmt.Sprintf("mr-%d-%d-tmp-*", mapNum, i)
+		file, err := os.CreateTemp(".", tempFileNames[i])
+		if err != nil {
+			log.Fatalf("create temp file failed: %v", err)
+		}
+		defer file.Close()
+		tmpFiles[i] = file
+		encoders[i] = json.NewEncoder(file)
+	}
 
+	for _, kv := range kva {
+		reduceID := ihash(kv.Key) % reduceNum
+		if err := encoders[reduceID].Encode(&kv); err != nil {
+			log.Fatalf("encode failed for key %v:%v", kv.Key, err)
+		}
+
+	}
+	for i := 0; i < reduceNum; i++ {
+		os.Rename(tempFileNames[i], fmt.Sprint("mr-%d-%d", mapNum, i))
+	}
 }
 
 func doReduceTask(reducef func(string, []string) string, response Response) {
@@ -179,6 +200,7 @@ func doSave(para Response, data interface{}) {
 	defer os.Remove(tmpName)
 
 	contentStr, _ := data.(string)
+
 	_, err = tmpFile.Write([]byte(contentStr))
 	if err != nil {
 		panic("save data err" + err.Error())
@@ -186,7 +208,7 @@ func doSave(para Response, data interface{}) {
 
 	//map 类型
 	if para.jobType == TaskTypeMap {
-		newPath = fmt.Sprintf("IntermediateFilePattern",para.mapNum,para.)
+		newPath = fmt.Sprintf(IntermediateFilePattern, para.mapNum)
 	}
 	//reduce 类型
 	if para.jobType == TaskTypeReduce {
