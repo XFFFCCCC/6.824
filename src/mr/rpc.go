@@ -6,8 +6,20 @@ package mr
 // remember to capitalize all names.
 //
 
-import "os"
-import "strconv"
+import (
+	"os"
+	"strconv"
+)
+
+// 任务类型
+const (
+	TaskTypeMap    = "map"
+	TaskTypeReduce = "reduce"
+	TaskTypeWait   = "wait"
+	TaskTypeExit   = "exit"
+)
+
+const IntermediateFilePattern = "mr-%d-%d"
 
 //
 // example to show how to declare the arguments
@@ -24,6 +36,32 @@ type ExampleReply struct {
 
 // Add your RPC definitions here.
 
+type Tasks interface {
+	Run()
+}
+type MapTask struct{}
+type ReduceTask struct{}
+
+// 读取文件 分片 生成中间文件
+func (m MapTask) run() {
+
+}
+
+// 合并中间文件 输出结果
+func (r ReduceTask) run() {
+
+}
+
+type Request struct {
+}
+
+type Response struct {
+	fileName  string //文件名
+	reduceNum int    //分为几个reduce文件
+	mapNum    int    //map数量  	//第几个map任务？  一起有几个map任务
+	jobType   string //任务类型  jobType
+	reduceId  int    //第几个reduce任务
+}
 
 // Cook up a unique-ish UNIX-domain socket name
 // in /var/tmp, for the coordinator.
