@@ -1,0 +1,16 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Launch Go Program",
+            "type": "go",
+            "request": "launch",
+            "mode": "debug", // 可改为 debug
+            "program": "${file}", // 当前打开的文件
+            "env": {},
+            "args": [
+                "../mrapps/wc.so"
+            ]
+        }
+    ]
+}

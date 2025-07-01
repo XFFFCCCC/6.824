@@ -11,12 +11,14 @@ import (
 	"strconv"
 )
 
+type TaskType int
+
 // 任务类型
 const (
-	TaskTypeMap    = "map"
-	TaskTypeReduce = "reduce"
-	TaskTypeWait   = "wait"
-	TaskTypeExit   = "exit"
+	TaskTypeMap TaskType = iota
+	TaskTypeReduce
+	TaskTypeWait
+	TaskTypeExit
 )
 
 const IntermediateFilePattern = "mr-%d-%d"
@@ -34,33 +36,31 @@ type ExampleReply struct {
 	Y int
 }
 
-// Add your RPC definitions here.
-
-type Tasks interface {
-	Run()
-}
-type MapTask struct{}
-type ReduceTask struct{}
-
-// 读取文件 分片 生成中间文件
-func (m MapTask) run() {
-
+type ReportTaskArgs struct {
+	JobType TaskType
+	JobNum  int
 }
 
-// 合并中间文件 输出结果
-func (r ReduceTask) run() {
-
+type ReportTaskTaskReply struct {
+	Ack bool
 }
+
+// // Add your RPC definitions here.
+// type Tasks interface {
+// 	Run()
+// }
+// type MapTask struct{}
+// type ReduceTask struct{}
 
 type Request struct {
 }
 
 type Response struct {
-	fileName  string //文件名
-	reduceNum int    //分为几个reduce文件
-	mapNum    int    //map数量  	//第几个map任务？  一起有几个map任务
-	jobType   string //任务类型  jobType
-	reduceId  int    //第几个reduce任务
+	FileName  string //文件名
+	ReduceNum int    //分为几个reduce文件
+	JobNum    int
+	JobType   TaskType //任务类型  jobType
+	MapNum    int
 }
 
 // Cook up a unique-ish UNIX-domain socket name

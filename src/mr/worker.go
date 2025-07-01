@@ -8,7 +8,6 @@ import (
 	"net/rpc"
 	"os"
 	"sort"
-	"strings"
 	"time"
 )
 
@@ -32,20 +31,21 @@ func ihash(key string) int {
 // 1.map 2 reduce
 func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
-	response := doHeartBeat()
 
 	for {
-		switch response.jobType {
+		response := doHeartBeat()
+		// log.Printf("Worker:receive coordinator's hearbeat %v\n", response)
+		switch response.JobType {
 		case TaskTypeMap:
 			doMapTask(mapf, response)
 		case TaskTypeReduce:
 			doReduceTask(reducef, response)
 		case TaskTypeWait:
-			time.Sleep(1 * time.Second)
+			time.Sleep(time.Second)
 		case TaskTypeExit: //完成任务
 			return
 		default:
-			panic(fmt.Sprintf("unexpected jobType %v"), response.jobType)
+			panic(fmt.Sprintf("unexpected jobType %v", response.JobType))
 		}
 	}
 	// Your worker implementation here.
@@ -87,10 +87,12 @@ func CallExample() {
 func doHeartBeat() Response {
 	request := Request{}
 	response := Response{}
-	ok := call("Coordinator.Example", &request, &response)
+	ok := call("Coordinator.GetTask", &request, &response)
+
 	if ok {
+		// fmt.Println(response.FileName)
 		// reply.Y should be 100.
-		fmt.Printf("reply.Y %v\n", response.Y)
+		// fmt.Printf("reply.Y %v\n"
 	} else {
 		fmt.Printf("call failed!\n")
 	}
@@ -100,9 +102,10 @@ func doHeartBeat() Response {
 
 // 如何保证容错
 func doMapTask(mapf func(string, string) []KeyValue, response Response) {
-	reduceNum := response.reduceNum // 任务数量
-	filePath := response.fileName   //文件名字
-	mapNum := response.jobNum
+
+	reduceNum := response.ReduceNum // 任务数量
+	filePath := response.FileName   //文件名字
+	mapNum := response.JobNum
 	//读取文件
 	content, err := os.ReadFile(filePath)
 	if err != nil {
@@ -117,12 +120,13 @@ func doMapTask(mapf func(string, string) []KeyValue, response Response) {
 	encoders := make([]*json.Encoder, reduceNum)
 
 	for i := 0; i < reduceNum; i++ {
-		tempFileNames[i] = fmt.Sprintf("mr-%d-%d-tmp-*", mapNum, i)
+		tempFileNames[i] = fmt.Sprintf("mr-%d-%d-tmp-", mapNum, i)
 		file, err := os.CreateTemp(".", tempFileNames[i])
 		if err != nil {
 			log.Fatalf("create temp file failed: %v", err)
 		}
-		defer file.Close()
+		// defer file.Close()
+		// log.Printf("Temp file created: %s", file.Name()) // 👈 打印出来
 		tmpFiles[i] = file
 		encoders[i] = json.NewEncoder(file)
 	}
@@ -132,91 +136,131 @@ func doMapTask(mapf func(string, string) []KeyValue, response Response) {
 		if err := encoders[reduceID].Encode(&kv); err != nil {
 			log.Fatalf("encode failed for key %v:%v", kv.Key, err)
 		}
-
 	}
 	for i := 0; i < reduceNum; i++ {
-		os.Rename(tempFileNames[i], fmt.Sprint("mr-%d-%d", mapNum, i))
+		// TODO: 加入写入重试机制，避免因磁盘问题丢失结果
+		if err := os.Rename(tmpFiles[i].Name(), fmt.Sprintf("mr-%d-%d", mapNum, i)); err != nil {
+			log.Fatalf("rename failed for %v:%v", tmpFiles[i].Name(), err)
+		}
+
+	}
+
+	reportTaskArgs := ReportTaskArgs{
+		JobType: TaskTypeMap,
+		JobNum:  response.JobNum,
+	}
+	var reply ReportTaskTaskReply
+	//是不是要有重试机制
+	maxRetry := 3
+	for i := 0; i < maxRetry; i++ {
+		ok := call("Coordinator.ReportTaskDone", &reportTaskArgs, &reply)
+		if ok && reply.Ack {
+			break
+		}
+		log.Printf("Retrying ReportTaskDone... attempt %d", i+1)
+		time.Sleep(1 * time.Second)
+	}
+
+	for _, f := range tmpFiles {
+		f.Close()
 	}
 }
 
 func doReduceTask(reducef func(string, []string) string, response Response) {
-	reduceId := response.reduceId //reduce 任务数量
-	mapNum := response.mapNum
-	// newPath="mr-"+(string)mapNum+(string)reduceNum
-	content, err := os.ReadFile(newPath)
-	// if err!=
-	//用map存放key->[]values
-	// key string value 切片
-	intermediate := []KeyValue{}
-	//遍历所有map任务生成的文件
-	for i := 0; i < mapNum; i++ {
-		filename := fmt.Sprintf("mr-%d-%d", i, reduceId)
-		content, err := os.ReadFile(filename)
-		if err != nil {
-			continue
-		}
 
-		lines := strings.Split(string(content), "\n")
-		for _, line := range lines {
-			if line == "" {
-				continue
-			}
-			parts := strings.SplitN(line, " ", 2)
-			if len(parts) != 2 {
-				continue
-			}
-			key := parts[0]
-			value := parts[1]
-			intermediate[key] = append(intermediate[key], value)
+	// reduceId := response.reduceNum //reduce 任务数量
+	mapNum := response.MapNum
+	taskNum := response.JobNum
+	kvMap := make(map[string][]string)
+	for i := 0; i < mapNum; i++ {
+		fileName := fmt.Sprintf("mr-%d-%d", i, taskNum)
+		file, err := os.Open(fileName)
+		if err != nil {
+			log.Fatalf("cannot open file %v:%v", fileName, err)
 		}
+		dec := json.NewDecoder(file)
+		for {
+			var kv KeyValue
+			if err := dec.Decode(&kv); err != nil {
+				break
+			}
+			kvMap[kv.Key] = append(kvMap[kv.Key], kv.Value)
+		}
+		file.Close() //
 	}
 
-	//将key排序，可选 ，方便测试一致
+	//2 获取并排序所有key
 	var keys []string
-	for k := range intermediate {
+	for k := range kvMap {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
 
-	var resultBuilder string.Builder
-	for _, key := range keyes {
-		values := intermediate[key]
-		output := reducef(key, values)
-		resultBuilder.WriteString(fmt.Sprintf("%v %v\n", key, output))
+	tempFileNames := fmt.Sprintf("mr-out-%d-tmp-", taskNum)
+	tempFile, err := os.CreateTemp(".", tempFileNames)
+	if err != nil {
+		log.Fatalf("cannot create file %v:%v", tempFile, err)
 	}
-	//写入最终输出文件(如 mr-out-<reduceID> )
-	doSave(response, resultBuilder.String())
+	defer tempFile.Close()
+
+	for _, k := range keys {
+		v := reducef(k, kvMap[k])
+		fmt.Fprintf(tempFile, "%v %v\n", k, v)
+	}
+
+	if err := os.Rename(tempFile.Name(), fmt.Sprintf("mr-out-%d", taskNum)); err != nil {
+		log.Fatalf("rename file failded %v:%v", tempFileNames, err)
+	}
+	reportTaskArgs := ReportTaskArgs{
+		JobType: TaskTypeReduce,
+		JobNum:  response.JobNum,
+	}
+	//是不是要有重试机制
+
+	var reply ReportTaskTaskReply
+
+	maxRetry := 3
+	for i := 0; i < maxRetry; i++ {
+		ok := call("Coordinator.ReportTaskDone", &reportTaskArgs, &reply)
+		if ok && reply.Ack {
+			break
+		}
+		log.Printf("Retrying ReportTaskDone... attempt %d", i+1)
+		time.Sleep(1 * time.Second)
+	}
 }
 
-func doSave(para Response, data interface{}) {
+// 告诉coordinate我任务完成了
 
-	//创建临时文件
-	tmpFile, err := os.CreateTemp(".", "mr-out-*")
-	if err != nil {
-		panic("create file mr-out-* err")
-	}
-	tmpName := tmpFile.Name()
-	defer tmpFile.Close()
-	defer os.Remove(tmpName)
+// func doSave(para Response, data interface{}) {
 
-	contentStr, _ := data.(string)
+// 	//创建临时文件
+// 	tmpFile, err := os.CreateTemp(".", "mr-out-*")
+// 	if err != nil {
+// 		panic("create file mr-out-* err")
+// 	}
+// 	tmpName := tmpFile.Name()
+// 	defer tmpFile.Close()
+// 	defer os.Remove(tmpName)
 
-	_, err = tmpFile.Write([]byte(contentStr))
-	if err != nil {
-		panic("save data err" + err.Error())
-	}
+// 	contentStr, _ := data.(string)
 
-	//map 类型
-	if para.jobType == TaskTypeMap {
-		newPath = fmt.Sprintf(IntermediateFilePattern, para.mapNum)
-	}
-	//reduce 类型
-	if para.jobType == TaskTypeReduce {
-		newPath := fmt.Sprintf("mr-out-%d", para.reduceId)
-	}
+// 	_, err = tmpFile.Write([]byte(contentStr))
+// 	if err != nil {
+// 		panic("save data err" + err.Error())
+// 	}
 
-	os.Rename("./temp")
-}
+// 	//map 类型
+// 	if para.jobType == TaskTypeMap {
+// 		newPath = fmt.Sprintf(IntermediateFilePattern, para.mapNum)
+// 	}
+// 	//reduce 类型
+// 	if para.jobType == TaskTypeReduce {
+// 		newPath := fmt.Sprintf("mr-out-%d", para.reduceId)
+// 	}
+
+// 	os.Rename("./temp")
+// }
 
 // send an RPC request to the coordinator, wait for the response.
 // usually returns true.
