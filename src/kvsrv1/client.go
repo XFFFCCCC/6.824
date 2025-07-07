@@ -2,20 +2,25 @@ package kvsrv
 
 import (
 	"6.5840/kvsrv1/rpc"
-	"6.5840/kvtest1"
-	"6.5840/tester1"
+	kvtest "6.5840/kvtest1"
+	tester "6.5840/tester1"
 )
 
-
 type Clerk struct {
-	clnt   *tester.Clnt
-	server string
+	clnt    *tester.Clnt
+	server  string
+	clerkId string
 }
 
 func MakeClerk(clnt *tester.Clnt, server string) kvtest.IKVClerk {
 	ck := &Clerk{clnt: clnt, server: server}
 	// You may add code here.
+	ck.clerkId = kvtest.RandValue(8)
 	return ck
+}
+
+func (ck *Clerk) ID() string {
+	return ck.clerkId
 }
 
 // Get fetches the current value and version for a key.  It returns
@@ -28,9 +33,18 @@ func MakeClerk(clnt *tester.Clnt, server string) kvtest.IKVClerk {
 // The types of args and reply (including whether they are pointers)
 // must match the declared types of the RPC handler function's
 // arguments. Additionally, reply must be passed as a pointer.
+
 func (ck *Clerk) Get(key string) (string, rpc.Tversion, rpc.Err) {
 	// You will have to modify this function.
-	return "", 0, rpc.ErrNoKey
+	Args := &rpc.GetArgs{
+		Key: key,
+	}
+	Reply := &rpc.GetReply{}
+
+	//如何得到服务名字
+	ck.clnt.Call(ck.server, "KVServer.Get", Args, Reply)
+
+	return Reply.Value, Reply.Version, Reply.Err
 }
 
 // Put updates key with value only if the version in the
@@ -52,5 +66,15 @@ func (ck *Clerk) Get(key string) (string, rpc.Tversion, rpc.Err) {
 // arguments. Additionally, reply must be passed as a pointer.
 func (ck *Clerk) Put(key, value string, version rpc.Tversion) rpc.Err {
 	// You will have to modify this function.
-	return rpc.ErrNoKey
+	Args := &rpc.PutArgs{
+		Key:     key,
+		Value:   value,
+		Version: version,
+	}
+
+	Reply := &rpc.PutReply{}
+
+	ck.clnt.Call(ck.server, "KVServer.Put", Args, Reply)
+
+	return Reply.Err
 }

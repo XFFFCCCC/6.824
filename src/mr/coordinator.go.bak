@@ -6,85 +6,47 @@ import (
 	"net/http"
 	"net/rpc"
 	"os"
+	"sync"
 	"time"
 )
 
-type TaskStatus int
-
-const (
-	Idle TaskStatus = iota
-	InProgress
-	Completed
-)
-
-type SchedulePhase int
-
-const (
-	Map SchedulePhase = iota
-	Reduce
-	done
-)
-
 type Task struct {
-	filename  string
-	taskId    int
-	State     TaskStatus //   0idle   1 running  2完成
-	startTime time.Time
-}
-
-type heartbeatMsg struct {
-	response *heartbeatMsg
-	ok       chan struct{}
-}
-
-type reportMsg struct {
-	request *reportMsg
-	ok      chan struct{}
+	Filename  string
+	TaskId    int
+	State     int //   0idle   1 running  2完成
+	StartTime time.Time
 }
 
 type Coordinator struct {
 	// Your definitions here.
 
-	files   []string //输入文件列表
-	nReduce int      //Reduce 任务数量
-	nMap    int
-	tasks   []Task
-	stage   SchedulePhase //"map","reduce","done"
-
-	heartbeatCh chan heartbeatMsg
-	reportCh    chan reportMsg
-	doneCh      chan struct{}
+	Files   []string //输入文件列表
+	NReduce int      //Reduce 任务数量
+	Tasks   []Task
+	// ReduceTasks []Task
+	Stage string //"map","reduce","done"
+	mu    sync.Mutex
 }
 
 // 判断目前的状态  ，先硬编码
 func (c *Coordinator) isMapStage() bool {
-	return c.stage == Map
+	return c.Stage == "map"
 }
 
 func (c *Coordinator) isReduceStage() bool {
-	return c.stage == Reduce
+	return c.Stage == "reduce"
 }
 
-// create a Coordinator.
-// main/mrcoordinator.go calls this function.
-// nReduce is the number of reduce tasks to use.
-func MakeCoordinator(files []string, nReduce int) *Coordinator {
-	// fmt.Print(files)
-	c := Coordinator{}
+// Your code here -- RPC handlers for the worker to call.
 
-	for i, fname := range files {
-		c.Tasks[i] = Task{
-			TaskId:   i,
-			Filename: fname,
-			State:    0, //idle
-		}
-	}
-
-	c.server()
-
-	//启动后台任务监控线程(例如超时处理和阶段切换)
-
-	return &c
+// an example RPC handler.
+//
+// the RPC argument and reply types are defined in rpc.go.
+//
+// 如何知道map任务结束了
+func (c *Coordinator) Example(args *ExampleArgs, reply *ExampleReply) error {
+	reply.Y = args.X + 1
+	return nil
 }
 
 // 如何给worker分配map 或者reduce
@@ -185,6 +147,65 @@ func (c *Coordinator) Done() bool {
 		ret = true
 	}
 	return ret
+}
+
+// create a Coordinator.
+// main/mrcoordinator.go calls this function.
+// nReduce is the number of reduce tasks to use.
+func MakeCoordinator(files []string, nReduce int) *Coordinator {
+	// fmt.Print(files)
+	c := Coordinator{
+		Files:   files,
+		NReduce: nReduce,
+		Stage:   "map",
+		Tasks:   make([]Task, len(files)),
+	}
+
+	for i, fname := range files {
+		c.Tasks[i] = Task{
+			TaskId:   i,
+			Filename: fname,
+			State:    0, //idle
+		}
+	}
+
+	// for i := range nReduce {
+	// 	c.ReduceTasks[i] = Task{
+	// 		TaskId: i,
+	// 		State:  0,
+	// 	}
+	// }
+
+	// Your code here.
+
+	c.server()
+	go func() {
+		for {
+			time.Sleep(time.Second)
+			c.mu.Lock()
+			if c.Stage == "done" {
+				c.mu.Unlock()
+				break
+			}
+			checkTimeout := func(t Task) bool {
+				return t.State == 1 && time.Since(t.StartTime) > 10*time.Second
+			}
+
+			for i := range c.Tasks {
+				if checkTimeout(c.Tasks[i]) {
+					// log.Printf("Map task %d timed out. Reassigning...\n", i)
+					c.Tasks[i].State = 0
+				}
+			}
+
+			//c.Done()
+			c.mu.Unlock()
+		}
+	}()
+
+	//启动后台任务监控线程(例如超时处理和阶段切换)
+
+	return &c
 }
 
 //对于判断当前阶段有两个思路，第一个是在GetTask函数中判断当前阶段的任务是否完成
