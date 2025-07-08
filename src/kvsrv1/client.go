@@ -9,8 +9,9 @@ import (
 )
 
 type Clerk struct {
-	clnt    *tester.Clnt
-	server  string
+	clnt   *tester.Clnt
+	server string
+	//add code
 	clerkId string
 }
 
@@ -82,7 +83,7 @@ func (ck *Clerk) Put(key, value string, version rpc.Tversion) rpc.Err {
 	for !ok {
 		time.Sleep(100 * time.Millisecond)
 		ok = ck.clnt.Call(ck.server, "KVServer.Put", Args, Reply)
-		if ok && Reply.Err == rpc.ErrVersion {
+		if Reply.Err == rpc.ErrVersion {
 			Reply.Err = rpc.ErrMaybe
 		}
 
